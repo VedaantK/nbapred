@@ -3,6 +3,7 @@ FastAPI backend for the NBA predictor dashboard.
 Run with: uvicorn api.server:app --reload --port 8000
 """
 
+import asyncio
 import json
 import sqlite3
 import threading
@@ -36,6 +37,15 @@ except ImportError as _pt_err:
     reset_bankroll = None       # type: ignore
     get_trader_performance = None  # type: ignore
 
+try:
+    from models.market_scanner import (
+        scan_and_place_bets, find_opportunities, SCAN_INTERVAL_SECONDS,
+    )
+except ImportError as _ms_err:
+    scan_and_place_bets = None   # type: ignore
+    find_opportunities = None    # type: ignore
+    SCAN_INTERVAL_SECONDS = 900  # type: ignore
+
 # Pre-import all pipeline dependencies so they're loaded at server startup,
 # not on first button click (avoids a 15-30s freeze at the "starting" step).
 try:
@@ -68,9 +78,54 @@ app.add_middleware(
 )
 
 
+_scanner_state: dict = {
+    "running": False,
+    "last_scan": None,
+    "next_scan": None,
+    "scans_today": 0,
+    "bets_placed_today": 0,
+    "last_opportunities": [],
+}
+
+
+async def _scanner_loop():
+    """Background task: scan Kalshi every SCAN_INTERVAL_SECONDS and place bets."""
+    global _scanner_state
+    _scanner_state["running"] = True
+    logger.info(f"Market scanner started (interval={SCAN_INTERVAL_SECONDS}s)")
+
+    while True:
+        await asyncio.sleep(SCAN_INTERVAL_SECONDS)
+        try:
+            today = date.today().strftime("%Y-%m-%d")
+            # Reset daily counters at midnight
+            if _scanner_state.get("scan_date") != today:
+                _scanner_state["scans_today"] = 0
+                _scanner_state["bets_placed_today"] = 0
+                _scanner_state["scan_date"] = today
+
+            if scan_and_place_bets is not None:
+                result = scan_and_place_bets(today, DB_PATH)
+                _scanner_state["last_scan"] = datetime.now().isoformat()
+                _scanner_state["next_scan"] = (
+                    datetime.now() + timedelta(seconds=SCAN_INTERVAL_SECONDS)
+                ).isoformat()
+                _scanner_state["scans_today"] += 1
+                _scanner_state["bets_placed_today"] += result.get("new_bets", 0)
+                _scanner_state["last_opportunities"] = result.get("opportunities", [])
+                logger.info(
+                    f"Scanner scan #{_scanner_state['scans_today']}: "
+                    f"{result.get('scanned', 0)} markets, "
+                    f"{result.get('new_bets', 0)} new bets"
+                )
+        except Exception as e:
+            logger.error(f"Scanner loop error: {e}")
+
+
 @app.on_event("startup")
 async def startup():
     init_db(DB_PATH)
+    asyncio.create_task(_scanner_loop())
     logger.info("API server started")
 
 
@@ -111,7 +166,7 @@ async def get_today_predictions(game_date: str | None = None):
             p.confidence,
             GROUP_CONCAT(p.model_type || ':' || ROUND(p.predicted_over_prob, 3)) AS model_breakdown
         FROM predictions p
-        WHERE p.game_date = ?
+        WHERE p.game_date = ? AND p.confidence = 'high'
         GROUP BY p.player_name, p.game_date
         ORDER BY ABS(p.edge) DESC
         """,
@@ -164,7 +219,7 @@ async def get_prediction_history(days: int = 30):
             CASE WHEN (AVG(p.predicted_over_prob) > 0.5) = r.went_over THEN 1 ELSE 0 END AS correct
         FROM predictions p
         LEFT JOIN results r ON p.player_id = r.player_id AND p.game_date = r.game_date
-        WHERE p.game_date >= ?
+        WHERE p.game_date >= ? AND p.confidence = 'high'
         GROUP BY p.player_name, p.game_date
         ORDER BY p.game_date DESC, ABS(p.edge) DESC
         """,
@@ -629,7 +684,7 @@ async def get_daily_results(game_date: str | None = None):
             FROM predictions p
             LEFT JOIN results r
                    ON p.player_id = r.player_id AND p.game_date = r.game_date
-            WHERE p.game_date = ?
+            WHERE p.game_date = ? AND p.confidence = 'high'
             GROUP BY p.player_name, p.game_date
             ORDER BY ABS(COALESCE(r.actual_points, 0) - AVG(p.predicted_points)) DESC
             """,
@@ -729,6 +784,45 @@ async def trigger_injury_fetch(background_tasks: BackgroundTasks, game_date: str
 
     background_tasks.add_task(_do_fetch)
     return {"status": "started", "date": target}
+
+
+# ── Scanner endpoints ─────────────────────────────────────────────────────────
+
+@app.get("/api/trader/scanner/status")
+async def get_scanner_status():
+    """Return live scanner state: last scan time, next scan, opportunities found."""
+    return {
+        **_scanner_state,
+        "scan_interval_seconds": SCAN_INTERVAL_SECONDS,
+    }
+
+
+@app.post("/api/trader/scanner/scan-now")
+async def trigger_scan_now():
+    """Manually trigger one scan immediately, returns opportunities + bets placed."""
+    if scan_and_place_bets is None:
+        raise HTTPException(status_code=503, detail="Scanner module not available")
+
+    today = date.today().strftime("%Y-%m-%d")
+    try:
+        result = scan_and_place_bets(today, DB_PATH)
+        _scanner_state["last_scan"] = datetime.now().isoformat()
+        _scanner_state["next_scan"] = (
+            datetime.now() + timedelta(seconds=SCAN_INTERVAL_SECONDS)
+        ).isoformat()
+        _scanner_state["scans_today"] = _scanner_state.get("scans_today", 0) + 1
+        _scanner_state["bets_placed_today"] = (
+            _scanner_state.get("bets_placed_today", 0) + result.get("new_bets", 0)
+        )
+        _scanner_state["last_opportunities"] = result.get("opportunities", [])
+        return {
+            "scanned": result.get("scanned", 0),
+            "new_bets": result.get("new_bets", 0),
+            "opportunities": result.get("opportunities", []),
+            "bets_placed": result.get("bets_placed", []),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── RL agent status endpoint ──────────────────────────────────────────────────

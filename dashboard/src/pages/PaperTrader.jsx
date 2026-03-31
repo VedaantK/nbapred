@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
-import { DollarSign, TrendingUp, TrendingDown, Percent } from 'lucide-react'
+import { DollarSign, TrendingUp, TrendingDown, Percent, Activity, RefreshCw } from 'lucide-react'
 
 function MetricCard({ label, value, sub, color = 'text-white' }) {
   return (
@@ -39,9 +39,24 @@ function SourceBadge({ source }) {
   )
 }
 
+function timeAgo(isoString) {
+  if (!isoString) return null
+  const diff = Math.floor((Date.now() - new Date(isoString)) / 1000)
+  if (diff < 60) return `${diff}s ago`
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  return `${Math.floor(diff / 3600)}h ago`
+}
+
+function timeUntil(isoString) {
+  if (!isoString) return null
+  const diff = Math.floor((new Date(isoString) - Date.now()) / 1000)
+  if (diff <= 0) return 'now'
+  if (diff < 60) return `${diff}s`
+  return `${Math.floor(diff / 60)}m`
+}
+
 export default function PaperTrader() {
   const today = new Date().toISOString().split('T')[0]
-  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]
 
   const [perf, setPerf] = useState(null)
   const [bets, setBets] = useState([])
@@ -50,6 +65,9 @@ export default function PaperTrader() {
   const [actionStatus, setActionStatus] = useState('')
   const [bankrollInput, setBankrollInput] = useState('30')
   const [days, setDays] = useState(30)
+  const [scannerState, setScannerState] = useState(null)
+  const [scanning, setScanning] = useState(false)
+  const scanPollRef = useRef(null)
 
   async function loadPerf() {
     try {
@@ -65,14 +83,27 @@ export default function PaperTrader() {
     } catch {}
   }
 
+  async function loadScannerStatus() {
+    try {
+      const res = await fetch('/api/trader/scanner/status')
+      if (res.ok) setScannerState(await res.json())
+    } catch {}
+  }
+
   async function load() {
     setLoading(true)
-    await Promise.all([loadPerf(), loadBets(betsDate)])
+    await Promise.all([loadPerf(), loadBets(betsDate), loadScannerStatus()])
     setLoading(false)
   }
 
   useEffect(() => { load() }, [days])
   useEffect(() => { loadBets(betsDate) }, [betsDate])
+
+  // Poll scanner status every 30s
+  useEffect(() => {
+    scanPollRef.current = setInterval(loadScannerStatus, 30000)
+    return () => clearInterval(scanPollRef.current)
+  }, [])
 
   async function handleResetBankroll() {
     const amount = parseFloat(bankrollInput)
@@ -81,7 +112,7 @@ export default function PaperTrader() {
     try {
       const res = await fetch(`/api/trader/bankroll/reset?amount=${amount}`, { method: 'POST' })
       if (res.ok) {
-        setActionStatus(`Bankroll reset to $${amount.toFixed(2)}`)
+        setActionStatus(`Bankroll set to $${amount.toFixed(2)}`)
         await loadPerf()
       } else {
         setActionStatus('Reset failed')
@@ -90,20 +121,22 @@ export default function PaperTrader() {
     setTimeout(() => setActionStatus(''), 3000)
   }
 
-  async function handleGenerateBets() {
-    setActionStatus(`Generating bets for ${betsDate}...`)
+  async function handleScanNow() {
+    setScanning(true)
+    setActionStatus('Scanning Kalshi markets...')
     try {
-      const res = await fetch(`/api/trader/bets/generate?game_date=${betsDate}`, { method: 'POST' })
+      const res = await fetch('/api/trader/scanner/scan-now', { method: 'POST' })
       if (res.ok) {
         const data = await res.json()
-        setActionStatus(`Generated ${data.generated} bet${data.generated !== 1 ? 's' : ''}`)
-        await Promise.all([loadBets(betsDate), loadPerf()])
+        const msg = `Scanned ${data.scanned} markets — ${data.new_bets} new bet${data.new_bets !== 1 ? 's' : ''} placed`
+        setActionStatus(msg)
+        await Promise.all([loadBets(betsDate), loadPerf(), loadScannerStatus()])
       } else {
-        const err = await res.json()
-        setActionStatus(err.detail || 'Failed to generate bets')
+        setActionStatus('Scan failed')
       }
-    } catch { setActionStatus('Error generating bets') }
-    setTimeout(() => setActionStatus(''), 4000)
+    } catch { setActionStatus('Scan error') }
+    setScanning(false)
+    setTimeout(() => setActionStatus(''), 5000)
   }
 
   async function handleSettleBets() {
@@ -123,6 +156,7 @@ export default function PaperTrader() {
 
   const totalPnl = perf?.total_pnl ?? null
   const pnlColor = totalPnl == null ? 'text-gray-300' : totalPnl > 0 ? 'text-green-400' : totalPnl < 0 ? 'text-red-400' : 'text-gray-300'
+  const opportunities = scannerState?.last_opportunities || []
 
   return (
     <div>
@@ -137,6 +171,99 @@ export default function PaperTrader() {
             <option key={d} value={d}>Last {d} days</option>
           ))}
         </select>
+      </div>
+
+      {/* Scanner Status */}
+      <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Activity size={15} className="text-purple-400" />
+            <h3 className="text-sm font-semibold text-gray-300">Kalshi Market Scanner</h3>
+            <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${scannerState?.running ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-gray-500'}`}>
+              {scannerState?.running ? 'LIVE' : 'IDLE'}
+            </span>
+          </div>
+          <button
+            onClick={handleScanNow}
+            disabled={scanning}
+            className="flex items-center gap-1.5 bg-purple-700 hover:bg-purple-600 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium px-3 py-1.5 rounded transition-colors"
+          >
+            <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
+            {scanning ? 'Scanning...' : 'Scan Now'}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-4 gap-3 text-sm mb-4">
+          <div>
+            <div className="text-xs text-gray-500">Last Scan</div>
+            <div className="text-gray-300">{timeAgo(scannerState?.last_scan) || '—'}</div>
+          </div>
+          <div>
+            <div className="text-xs text-gray-500">Next Scan</div>
+            <div className="text-gray-300">{timeUntil(scannerState?.next_scan) || '—'}</div>
+          </div>
+          <div>
+            <div className="text-xs text-gray-500">Scans Today</div>
+            <div className="text-gray-300">{scannerState?.scans_today ?? '—'}</div>
+          </div>
+          <div>
+            <div className="text-xs text-gray-500">Bets Placed Today</div>
+            <div className="text-purple-300 font-semibold">{scannerState?.bets_placed_today ?? '—'}</div>
+          </div>
+        </div>
+
+        {/* Live Opportunities */}
+        {opportunities.length > 0 ? (
+          <div>
+            <div className="text-xs text-gray-500 mb-2">Live Opportunities (from last scan)</div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr>
+                    {['Player', 'Line', 'Kalshi Price', 'Model Prob', 'Edge', 'Direction', 'Confidence'].map(h => (
+                      <th key={h} className="px-2 py-1.5 text-left text-gray-500 uppercase">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-800">
+                  {opportunities.map((o, i) => (
+                    <tr key={i} className="hover:bg-gray-800">
+                      <td className="px-2 py-2 font-medium text-white">{o.player_name}</td>
+                      <td className="px-2 py-2 text-gray-400">{o.line}</td>
+                      <td className="px-2 py-2 text-gray-300">
+                        {o.direction === 'over'
+                          ? `${(o.kalshi_over_prob * 100).toFixed(0)}¢`
+                          : `${(o.kalshi_under_prob * 100).toFixed(0)}¢`}
+                      </td>
+                      <td className="px-2 py-2 text-blue-400">{(o.model_prob * 100).toFixed(1)}%</td>
+                      <td className={`px-2 py-2 font-semibold ${Math.abs(o.edge) >= 0.10 ? 'text-green-400' : 'text-yellow-400'}`}>
+                        {o.edge > 0 ? '+' : ''}{(o.edge * 100).toFixed(1)}%
+                      </td>
+                      <td className="px-2 py-2">
+                        <span className={`font-medium uppercase ${o.direction === 'over' ? 'text-green-400' : 'text-red-400'}`}>
+                          {o.direction}
+                        </span>
+                      </td>
+                      <td className="px-2 py-2">
+                        <span className={`px-1 py-0.5 rounded text-xs ${
+                          o.confidence === 'high' ? 'bg-green-900 text-green-300' :
+                          o.confidence === 'medium' ? 'bg-yellow-900 text-yellow-300' :
+                          'bg-gray-800 text-gray-400'
+                        }`}>
+                          {o.confidence}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <div className="text-xs text-gray-600">
+            No opportunities found in last scan. Run pipeline first to generate predictions, then scan.
+          </div>
+        )}
       </div>
 
       {/* KPI cards */}
@@ -167,7 +294,7 @@ export default function PaperTrader() {
       <div className="grid md:grid-cols-2 gap-4 mb-6">
         {/* Bankroll settings */}
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <h3 className="text-sm font-semibold text-gray-300 mb-3">Bankroll Settings</h3>
+          <h3 className="text-sm font-semibold text-gray-300 mb-3">Set Your Bankroll</h3>
           <div className="flex items-center gap-2">
             <span className="text-gray-400 text-sm">$</span>
             <input
@@ -182,15 +309,15 @@ export default function PaperTrader() {
               onClick={handleResetBankroll}
               className="bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium px-3 py-1.5 rounded transition-colors"
             >
-              Reset Bankroll
+              Set Amount
             </button>
           </div>
-          <p className="text-xs text-gray-600 mt-2">Resets bankroll to the specified amount. Existing bets are kept.</p>
+          <p className="text-xs text-gray-600 mt-2">Enter how much you want to paper trade with. Scanner will size bets from this amount using Kelly criterion.</p>
         </div>
 
-        {/* Bet actions */}
+        {/* Settle */}
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <h3 className="text-sm font-semibold text-gray-300 mb-3">Bet Actions</h3>
+          <h3 className="text-sm font-semibold text-gray-300 mb-3">End of Day Settlement</h3>
           <div className="flex items-center gap-2 flex-wrap">
             <input
               type="date"
@@ -198,12 +325,6 @@ export default function PaperTrader() {
               onChange={e => setBetsDate(e.target.value)}
               className="bg-gray-800 border border-gray-700 text-sm text-gray-300 rounded px-2 py-1.5"
             />
-            <button
-              onClick={handleGenerateBets}
-              className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-3 py-1.5 rounded transition-colors"
-            >
-              Generate Bets
-            </button>
             <button
               onClick={handleSettleBets}
               className="bg-green-700 hover:bg-green-600 text-white text-sm font-medium px-3 py-1.5 rounded transition-colors"
@@ -214,7 +335,7 @@ export default function PaperTrader() {
           {actionStatus && (
             <div className="mt-2 text-xs text-blue-300 bg-blue-900/30 rounded px-2 py-1">{actionStatus}</div>
           )}
-          <p className="text-xs text-gray-600 mt-2">Generate uses today's predictions. Settle resolves pending bets against actual results.</p>
+          <p className="text-xs text-gray-600 mt-2">Pull actual scores in Daily Results first, then settle here to calculate P&L and update the RL agent.</p>
         </div>
       </div>
 
@@ -281,7 +402,7 @@ export default function PaperTrader() {
           <table className="w-full text-sm">
             <thead className="bg-gray-900 sticky top-0">
               <tr>
-                {['Player', 'Direction', 'Amount', 'Source', 'Odds', 'Edge', 'Kelly', 'Status', 'P&L'].map(h => (
+                {['Player', 'Direction', 'Amount', 'Source', 'Time', 'Odds', 'Edge', 'Status', 'P&L'].map(h => (
                   <th key={h} className="px-3 py-2 text-left text-xs text-gray-500 uppercase">{h}</th>
                 ))}
               </tr>
@@ -290,7 +411,7 @@ export default function PaperTrader() {
               {bets.length === 0 && (
                 <tr>
                   <td colSpan={9} className="px-3 py-8 text-center text-gray-600">
-                    No bets for this date. Run the pipeline first, then click "Generate Bets".
+                    No bets for this date. The scanner will place bets automatically when it finds good Kalshi edges.
                   </td>
                 </tr>
               )}
@@ -304,9 +425,9 @@ export default function PaperTrader() {
                   </td>
                   <td className="px-3 py-2.5 text-gray-300">${b.bet_amount?.toFixed(2)}</td>
                   <td className="px-3 py-2.5"><SourceBadge source={b.odds_source} /></td>
+                  <td className="px-3 py-2.5 text-gray-500 text-xs">{b.scan_time || '—'}</td>
                   <td className="px-3 py-2.5 text-gray-400">{b.decimal_odds?.toFixed(3)}</td>
                   <td className="px-3 py-2.5 text-blue-400">{b.edge != null ? `${(b.edge * 100).toFixed(1)}%` : '—'}</td>
-                  <td className="px-3 py-2.5 text-gray-500">{b.kelly_fraction != null ? `${(b.kelly_fraction * 100).toFixed(1)}%` : '—'}</td>
                   <td className="px-3 py-2.5"><StatusBadge status={b.status} /></td>
                   <td className="px-3 py-2.5">
                     {b.profit_loss != null ? (

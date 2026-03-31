@@ -203,6 +203,18 @@ def init_db(db_path: str | Path = DB_PATH):
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(player_id, fetched_date)
     );
+
+    -- Kalshi price snapshots captured during market scanning
+    CREATE TABLE IF NOT EXISTS kalshi_price_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        market_id TEXT NOT NULL,
+        player_name TEXT,
+        line REAL,
+        over_prob REAL,
+        under_prob REAL,
+        game_date DATE NOT NULL,
+        snapshot_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """
 
     with get_connection(db_path) as conn:
@@ -211,6 +223,7 @@ def init_db(db_path: str | Path = DB_PATH):
 
     # Add RL columns to paper_bets if they don't exist yet (idempotent migrations)
     _migrate_paper_bets_rl(db_path)
+    _migrate_paper_bets_scanner(db_path)
 
     logger.info(f"Database initialized at {db_path}")
 
@@ -223,6 +236,15 @@ def _migrate_paper_bets_rl(db_path: str | Path):
             conn.execute("ALTER TABLE paper_bets ADD COLUMN rl_state TEXT")
         if "rl_action" not in existing:
             conn.execute("ALTER TABLE paper_bets ADD COLUMN rl_action TEXT")
+        conn.commit()
+
+
+def _migrate_paper_bets_scanner(db_path: str | Path):
+    """Add scan_time column to paper_bets if missing."""
+    with get_connection(db_path) as conn:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(paper_bets)").fetchall()}
+        if "scan_time" not in existing:
+            conn.execute("ALTER TABLE paper_bets ADD COLUMN scan_time TEXT")
         conn.commit()
 
 

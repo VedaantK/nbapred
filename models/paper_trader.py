@@ -11,11 +11,22 @@ from pathlib import Path
 from config.settings import DB_PATH
 from config.logging_config import setup_logging
 from models.rl_agent import RLBettingAgent, encode_state, ACTION_KELLY_MULT
+from datetime import datetime as _dt
+
+
+def _time_bucket() -> str:
+    hour = _dt.now().hour
+    if hour < 12:
+        return "morning"
+    elif hour < 18:
+        return "afternoon"
+    else:
+        return "evening"
 
 logger = setup_logging("paper_trader")
 
 DEFAULT_BANKROLL = 30.0
-MIN_EDGE = 0.05
+MIN_EDGE = 0.10
 KELLY_MULTIPLIER = 0.5   # half-Kelly for safety
 MAX_KELLY_FRACTION = 0.20  # never risk more than 20% of bankroll on one bet
 
@@ -137,7 +148,7 @@ def generate_paper_bets(
             FROM predictions
             WHERE game_date = ?
             GROUP BY player_name
-            HAVING confidence != 'low' AND ABS(AVG(edge)) >= ?
+            HAVING confidence = 'high' AND ABS(AVG(edge)) >= ?
             ORDER BY ABS(AVG(edge)) DESC
             """,
             (game_date, min_edge),
@@ -146,22 +157,6 @@ def generate_paper_bets(
         if not preds:
             logger.info(f"No qualifying predictions for {game_date} (min_edge={min_edge:.0%})")
             return []
-
-        # Also fetch over/under prices from sportsbook_lines for proper Kelly
-        sb_prices = {}
-        sb_rows = conn.execute(
-            """
-            SELECT player_name, over_price, under_price
-            FROM sportsbook_lines
-            WHERE game_date = ?
-            ORDER BY CASE bookmaker WHEN 'draftkings' THEN 1 WHEN 'fanduel' THEN 2 ELSE 3 END
-            """,
-            (game_date,),
-        ).fetchall()
-        for r in sb_rows:
-            name = r[0]
-            if name not in sb_prices:
-                sb_prices[name] = {"over_price": r[1], "under_price": r[2]}
 
         current_balance = get_bankroll(db_path)
         generated = []
@@ -175,69 +170,28 @@ def generate_paper_bets(
 
             bet_direction = "over" if edge > 0 else "under"
 
-            # Build candidate bets from each available source
-            sources = []
-
-            # Sportsbook
-            if sb_implied_prob is not None:
-                prices = sb_prices.get(player_name, {})
-                if bet_direction == "over":
-                    american = prices.get("over_price") or -110
-                    implied = sb_implied_prob
-                    source_edge = model_prob - sb_implied_prob
-                else:
-                    american = prices.get("under_price") or -110
-                    implied = 1.0 - (sb_implied_prob or 0.5)
-                    source_edge = (1.0 - model_prob) - implied
-                if source_edge >= min_edge:
-                    sources.append({
-                        "source": "sportsbook",
-                        "decimal_odds": american_to_decimal(american),
-                        "implied_prob": implied,
-                        "source_edge": source_edge,
-                    })
-
-            # Kalshi
-            if kalshi_prob is not None:
-                if bet_direction == "over":
-                    implied = kalshi_prob
-                    source_edge = model_prob - kalshi_prob
-                    dec_odds = 1.0 / max(kalshi_prob, 0.01)
-                else:
-                    implied = 1.0 - kalshi_prob
-                    source_edge = (1.0 - model_prob) - implied
-                    dec_odds = 1.0 / max(implied, 0.01)
-                if source_edge >= min_edge:
-                    sources.append({
-                        "source": "kalshi",
-                        "decimal_odds": dec_odds,
-                        "implied_prob": implied,
-                        "source_edge": source_edge,
-                    })
-
-            # Polymarket
-            if polymarket_prob is not None:
-                if bet_direction == "over":
-                    implied = polymarket_prob
-                    source_edge = model_prob - polymarket_prob
-                    dec_odds = 1.0 / max(polymarket_prob, 0.01)
-                else:
-                    implied = 1.0 - polymarket_prob
-                    source_edge = (1.0 - model_prob) - implied
-                    dec_odds = 1.0 / max(implied, 0.01)
-                if source_edge >= min_edge:
-                    sources.append({
-                        "source": "polymarket",
-                        "decimal_odds": dec_odds,
-                        "implied_prob": implied,
-                        "source_edge": source_edge,
-                    })
-
-            if not sources:
+            # Only bet via Kalshi — skip players without an active Kalshi market
+            if kalshi_prob is None:
                 continue
 
-            # Pick the best source (highest edge)
-            best = max(sources, key=lambda s: s["source_edge"])
+            if bet_direction == "over":
+                implied = kalshi_prob
+                source_edge = model_prob - kalshi_prob
+                dec_odds = 1.0 / max(kalshi_prob, 0.01)
+            else:
+                implied = 1.0 - kalshi_prob
+                source_edge = (1.0 - model_prob) - implied
+                dec_odds = 1.0 / max(implied, 0.01)
+
+            if source_edge < min_edge:
+                continue
+
+            best = {
+                "source": "kalshi",
+                "decimal_odds": dec_odds,
+                "implied_prob": implied,
+                "source_edge": source_edge,
+            }
 
             # Base Kelly fraction
             base_frac = kelly_fraction(model_prob, best["decimal_odds"])
@@ -247,7 +201,7 @@ def generate_paper_bets(
             # RL agent chooses Kelly multiplier based on learned state
             rl_agent = RLBettingAgent.load()
             recent_acc = _get_recent_accuracy(conn)
-            rl_state = encode_state(best["source_edge"], confidence, recent_acc)
+            rl_state = encode_state(best["source_edge"], confidence, recent_acc, _time_bucket())
             rl_action = rl_agent.choose_action(rl_state)
             rl_kelly_mult = ACTION_KELLY_MULT[rl_action]
 
@@ -398,6 +352,7 @@ def settle_paper_bets(game_date: str, db_path: str | Path = DB_PATH) -> dict:
                         abs(profit_loss / amount) if amount > 0 else 0.0,
                         "medium",
                         recent_acc,
+                        _time_bucket(),
                     )
                     rl_agent.update(rl_state, rl_action, reward, next_state)
                 except Exception:

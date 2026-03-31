@@ -1,11 +1,12 @@
 """
 Q-learning reinforcement learning agent for paper bet sizing.
 
-State space (18 states):
-  - edge_bucket: low (0.05-0.10) | medium (0.10-0.20) | high (>0.20)   → 3
-  - confidence:  low | medium | high                                      → 3
-  - recent_accuracy: poor (<0.45) | average (0.45-0.55) | good (>0.55)  → 3
-  (total: 3 × 3 × 2 = 18, confidence 'low' bets are skipped upstream)
+State space (81 states):
+  - edge_bucket:      low (0.05-0.10) | medium (0.10-0.20) | high (>0.20)    → 3
+  - confidence:       low | medium | high                                      → 3
+  - recent_accuracy:  poor (<0.45) | average (0.45-0.55) | good (>0.55)      → 3
+  - time_bucket:      morning (<12pm) | afternoon (12-6pm) | evening (>6pm)  → 3
+  (total: 3 × 3 × 3 × 3 = 81 states)
 
 Actions (5):
   0 = skip bet
@@ -14,7 +15,7 @@ Actions (5):
   3 = three-quarter Kelly
   4 = full Kelly
 
-The Q-table is a flat dict keyed by "(state, action)" strings.
+The Q-table is a flat dict keyed by state strings.
 Persisted as JSON so it survives server restarts.
 """
 
@@ -66,11 +67,16 @@ def _accuracy_bucket(recent_accuracy: float | None) -> str:
     return "poor"
 
 
-def encode_state(edge: float, confidence: str, recent_accuracy: float | None) -> str:
+def encode_state(
+    edge: float,
+    confidence: str,
+    recent_accuracy: float | None,
+    time_bucket: str = "afternoon",
+) -> str:
     """Return a compact string key for the Q-table state."""
     eb = _edge_bucket(edge)
     ab = _accuracy_bucket(recent_accuracy)
-    return f"{eb}|{confidence}|{ab}"
+    return f"{eb}|{confidence}|{ab}|{time_bucket}"
 
 
 class RLBettingAgent:
@@ -136,12 +142,18 @@ class RLBettingAgent:
         q_vals = self._get_q(state)
         return int(q_vals.index(max(q_vals)))
 
-    def get_kelly_multiplier(self, edge: float, confidence: str, recent_accuracy: float | None) -> float:
+    def get_kelly_multiplier(
+        self,
+        edge: float,
+        confidence: str,
+        recent_accuracy: float | None,
+        time_bucket: str = "afternoon",
+    ) -> float:
         """
         Convenience method: encode state, choose action, return Kelly multiplier.
         Skips exploration randomness in inference mode (epsilon=0 temporarily).
         """
-        state = encode_state(edge, confidence, recent_accuracy)
+        state = encode_state(edge, confidence, recent_accuracy, time_bucket)
         q_vals = self._get_q(state)
         action = int(q_vals.index(max(q_vals)))
         return ACTION_KELLY_MULT[action]

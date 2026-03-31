@@ -26,13 +26,13 @@ POLYMARKET_BASE_URL = "https://clob.polymarket.com"
 POLYMARKET_GAMMA_URL = "https://gamma-api.polymarket.com"
 
 # NBA API settings
-NBA_SEASONS = ["2025-26", "2024-25", "2023-24"]  # Current + last 2 seasons for training data
+NBA_SEASONS = ["2025-26", "2024-25", "2023-24", "2022-23", "2021-22", "2020-21"]  # 6 seasons for training data
 REQUEST_DELAY = 0.6  # Seconds between nba_api requests (rate limit)
 
 # Model settings
 ROLLING_WINDOWS = [3, 5, 10, 20]  # Game windows for rolling averages
 MIN_GAMES_FOR_PREDICTION = 10  # Player must have this many games before we predict
-EDGE_THRESHOLD = 0.05  # 5% probability edge to flag a bet
+EDGE_THRESHOLD = 0.08  # 8% probability edge to flag a bet
 CONFIDENCE_THRESHOLD = 0.60  # 60% confidence minimum to surface prediction
 
 # Top players to track (starters + key bench scorers)

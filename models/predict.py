@@ -101,9 +101,9 @@ def _assign_confidence(model_probs: list[float], edge: float) -> str:
     under_votes = len(model_probs) - over_votes
     majority = max(over_votes, under_votes)
 
-    if majority == len(model_probs) and abs(edge) >= 0.10:
+    if majority == len(model_probs) and abs(edge) >= 0.12:
         return "high"
-    if majority >= 2 and abs(edge) >= EDGE_THRESHOLD:
+    if majority >= 3 and abs(edge) >= EDGE_THRESHOLD:
         return "medium"
     return "low"
 
@@ -134,26 +134,20 @@ def predict_today(db_path: str | Path = DB_PATH, game_date: str | None = None) -
     conn.execute("PRAGMA busy_timeout = 10000")
 
     try:
-        # Prefer prediction market players (Kalshi/Polymarket only offer ~10-20 star players).
-        # Fall back to all sportsbook players if no PM data was fetched yet.
-        pm_rows = conn.execute(
-            "SELECT DISTINCT player_name FROM prediction_market_lines WHERE game_date = ?", (today,)
+        # Only predict players with an active Kalshi scoring market today.
+        # No sportsbook fallback — predictions are exclusively for Kalshi-available players.
+        kalshi_rows = conn.execute(
+            "SELECT DISTINCT player_name FROM prediction_market_lines "
+            "WHERE game_date = ? AND source = 'kalshi'",
+            (today,),
         ).fetchall()
-        pm_names = [r[0] for r in pm_rows]
-
-        if pm_names:
-            lined_player_names = pm_names
-            logger.info(f"Using {len(pm_names)} prediction market players for {today}")
-        else:
-            sb_rows = conn.execute(
-                "SELECT DISTINCT player_name FROM sportsbook_lines WHERE game_date = ?", (today,)
-            ).fetchall()
-            lined_player_names = [r[0] for r in sb_rows]
-            logger.info(f"No PM data — falling back to {len(lined_player_names)} sportsbook players")
+        lined_player_names = [r[0] for r in kalshi_rows]
 
         if not lined_player_names:
-            logger.warning("No player lines found for today — fetch odds first")
+            logger.info(f"No Kalshi markets found for {today} — run pipeline to fetch Kalshi odds first")
             return []
+
+        logger.info(f"Predicting {len(lined_player_names)} Kalshi-listed players for {today}")
 
         predictions = []
 
