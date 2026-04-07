@@ -19,7 +19,7 @@ MODELS_DIR = PROJECT_ROOT / "models" / "saved"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 
 # Kalshi API (public, no key needed for market data)
-KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_BASE_URL = "https://trading-api.kalshi.com/trade-api/v2"
 
 # Polymarket CLOB API (public, no key needed for market data)
 POLYMARKET_BASE_URL = "https://clob.polymarket.com"

@@ -78,6 +78,16 @@ app.add_middleware(
 )
 
 
+_results_fetch_state: dict = {
+    "status": "idle",       # idle | running | done | error
+    "attempt": 0,
+    "max_attempts": 5,
+    "scored": 0,
+    "game_date": None,
+    "next_retry": None,
+    "message": "",
+}
+
 _scanner_state: dict = {
     "running": False,
     "last_scan": None,
@@ -88,6 +98,58 @@ _scanner_state: dict = {
 }
 
 
+async def _results_fetch_loop(game_date: str):
+    """
+    Background coroutine: calls score_past_predictions() and retries every 5 min
+    (up to 5 times) until the NBA API has published final box scores.
+    """
+    global _results_fetch_state
+    MAX_ATTEMPTS = 5
+    RETRY_INTERVAL = 300  # 5 minutes
+
+    loop = asyncio.get_event_loop()
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        _results_fetch_state.update({
+            "status": "running",
+            "attempt": attempt,
+            "next_retry": None,
+            "message": f"Attempt {attempt}/{MAX_ATTEMPTS} — calling NBA API...",
+        })
+        try:
+            result = await loop.run_in_executor(
+                None, lambda: score_past_predictions(DB_PATH, game_date)
+            )
+        except Exception as e:
+            logger.error(f"Results fetch attempt {attempt} error: {e}")
+            result = {"scored": 0}
+
+        if result.get("scored", 0) > 0:
+            _results_fetch_state.update({
+                "status": "done",
+                "scored": result["scored"],
+                "message": f"Scored {result['scored']} predictions for {game_date}",
+                "next_retry": None,
+            })
+            logger.info(f"Results fetch done: {result['scored']} scored for {game_date}")
+            return
+
+        if attempt < MAX_ATTEMPTS:
+            next_retry = (datetime.now() + timedelta(seconds=RETRY_INTERVAL)).isoformat()
+            _results_fetch_state.update({
+                "next_retry": next_retry,
+                "message": f"Attempt {attempt}/{MAX_ATTEMPTS} — NBA API not ready yet. Retrying in 5 min.",
+            })
+            logger.info(f"Results not available yet for {game_date}, retrying in {RETRY_INTERVAL}s")
+            await asyncio.sleep(RETRY_INTERVAL)
+
+    _results_fetch_state.update({
+        "status": "error",
+        "message": f"NBA API did not return results for {game_date} after {MAX_ATTEMPTS} attempts (~25 min). Try again later.",
+        "next_retry": None,
+    })
+
+
 async def _scanner_loop():
     """Background task: scan Kalshi every SCAN_INTERVAL_SECONDS and place bets."""
     global _scanner_state
@@ -95,7 +157,6 @@ async def _scanner_loop():
     logger.info(f"Market scanner started (interval={SCAN_INTERVAL_SECONDS}s)")
 
     while True:
-        await asyncio.sleep(SCAN_INTERVAL_SECONDS)
         try:
             today = date.today().strftime("%Y-%m-%d")
             # Reset daily counters at midnight
@@ -120,6 +181,7 @@ async def _scanner_loop():
                 )
         except Exception as e:
             logger.error(f"Scanner loop error: {e}")
+        await asyncio.sleep(SCAN_INTERVAL_SECONDS)
 
 
 @app.on_event("startup")
@@ -727,12 +789,36 @@ async def get_daily_results(game_date: str | None = None):
 @app.post("/api/results/fetch")
 async def fetch_daily_results(game_date: str | None = None):
     """
-    Pull actual NBA results for game_date from the NBA API and score predictions.
-    Does NOT retrain models — use /api/scoring/run for the full learning pipeline.
+    Start a background job that fetches NBA results and scores predictions.
+    Auto-retries every 5 minutes (up to 5×) until the NBA API publishes final scores.
+    Poll GET /api/results/fetch/status for live progress.
     """
+    global _results_fetch_state
     target = game_date or (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    result = score_past_predictions(DB_PATH, target)
-    return result
+
+    if _results_fetch_state["status"] == "running":
+        return {
+            "status": "already_running",
+            "game_date": _results_fetch_state["game_date"],
+            "attempt": _results_fetch_state["attempt"],
+        }
+
+    _results_fetch_state.update({
+        "status": "running",
+        "attempt": 0,
+        "scored": 0,
+        "game_date": target,
+        "next_retry": None,
+        "message": "Starting...",
+    })
+    asyncio.create_task(_results_fetch_loop(target))
+    return {"status": "started", "game_date": target}
+
+
+@app.get("/api/results/fetch/status")
+async def get_results_fetch_status():
+    """Return the current state of the background results fetch job."""
+    return _results_fetch_state
 
 
 # ── Injury endpoints ─────────────────────────────────────────────────────────

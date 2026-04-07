@@ -225,6 +225,13 @@ def get_yesterdays_results(game_date: str | None = None) -> pd.DataFrame:
             pid = int(pid)
             if pid in seen_players:
                 continue  # dedup (both teams in same game_id response)
+
+            # Skip DNPs — minutes string is empty or zero when player didn't play
+            minutes_raw = str(row.get("minutes") or "")
+            played = bool(minutes_raw and minutes_raw not in ("PT00M00.00S", "PT0M0.00S", ""))
+            if not played:
+                continue
+
             seen_players.add(pid)
 
             first = str(row.get("firstName", "")).strip()

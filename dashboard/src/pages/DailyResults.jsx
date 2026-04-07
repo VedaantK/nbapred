@@ -127,15 +127,37 @@ function ResultsTable({ players }) {
 
 // ── main component ────────────────────────────────────────────────────────────
 
+function useCountdown(isoTarget) {
+  const [secs, setSecs] = useState(null)
+  useEffect(() => {
+    if (!isoTarget) { setSecs(null); return }
+    const tick = () => {
+      const diff = Math.max(0, Math.floor((new Date(isoTarget) - Date.now()) / 1000))
+      setSecs(diff)
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [isoTarget])
+  if (secs == null) return null
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
 export default function DailyResults() {
   const [selectedDate, setSelectedDate] = useState(yesterday())
   const [data, setData] = useState(null)
   const [fetching, setFetching] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [fetchState, setFetchState] = useState({ status: 'idle', message: '', attempt: 0, max_attempts: 5, scored: 0, next_retry: null })
   const [scoringState, setScoringState] = useState({ status: 'idle', message: '' })
   const [retrainState, setRetrainState] = useState({ status: 'idle', message: '' })
+  const fetchPollRef = useRef(null)
   const scoringPollRef = useRef(null)
   const retrainPollRef = useRef(null)
+
+  const countdown = useCountdown(fetchState.next_retry)
 
   async function loadResults(date) {
     setLoading(true)
@@ -146,13 +168,32 @@ export default function DailyResults() {
     setLoading(false)
   }
 
+  async function pollFetchStatus(date) {
+    try {
+      const res = await fetch('/api/results/fetch/status')
+      if (!res.ok) return
+      const state = await res.json()
+      setFetchState(state)
+      if (state.status === 'done') {
+        clearInterval(fetchPollRef.current)
+        fetchPollRef.current = null
+        setFetching(false)
+        await loadResults(date)
+      } else if (state.status === 'error') {
+        clearInterval(fetchPollRef.current)
+        fetchPollRef.current = null
+        setFetching(false)
+      }
+    } catch {}
+  }
+
   async function pullResults() {
     setFetching(true)
+    setFetchState({ status: 'running', message: 'Starting...', attempt: 0, max_attempts: 5, scored: 0, next_retry: null })
     try {
       await fetch(`/api/results/fetch?game_date=${selectedDate}`, { method: 'POST' })
-      await loadResults(selectedDate)
     } catch {}
-    setFetching(false)
+    fetchPollRef.current = setInterval(() => pollFetchStatus(selectedDate), 5000)
   }
 
   async function fetchScoringStatus() {
@@ -209,6 +250,7 @@ export default function DailyResults() {
 
   useEffect(() => {
     return () => {
+      if (fetchPollRef.current) clearInterval(fetchPollRef.current)
       if (scoringPollRef.current) clearInterval(scoringPollRef.current)
       if (retrainPollRef.current) clearInterval(retrainPollRef.current)
     }
@@ -237,10 +279,42 @@ export default function DailyResults() {
             className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium px-3 py-1.5 rounded transition-colors"
           >
             <RefreshCw size={13} className={fetching ? 'animate-spin' : ''} />
-            {fetching ? 'Pulling...' : fetched ? 'Refresh Results' : 'Pull Results'}
+            {fetching ? 'Fetching...' : fetched ? 'Refresh Results' : 'Pull Results'}
           </button>
         </div>
       </div>
+
+      {/* Fetch status panel — shown while fetching or on result/error */}
+      {fetchState.status !== 'idle' && (
+        <div className={`rounded-lg border px-4 py-3 mb-5 flex items-start gap-3 text-sm ${
+          fetchState.status === 'done'  ? 'bg-green-900/20 border-green-800 text-green-300' :
+          fetchState.status === 'error' ? 'bg-red-900/20 border-red-800 text-red-300' :
+                                          'bg-blue-900/20 border-blue-800 text-blue-300'
+        }`}>
+          {fetchState.status === 'running' && <RefreshCw size={14} className="animate-spin mt-0.5 shrink-0" />}
+          {fetchState.status === 'done'    && <CheckCircle2 size={14} className="mt-0.5 shrink-0" />}
+          {fetchState.status === 'error'   && <XCircle size={14} className="mt-0.5 shrink-0" />}
+          <div className="flex-1">
+            <div className="font-medium">{fetchState.message}</div>
+            {fetchState.status === 'running' && fetchState.next_retry && countdown && (
+              <div className="text-xs mt-0.5 opacity-75">
+                Next retry in {countdown}
+              </div>
+            )}
+            {fetchState.status === 'running' && fetchState.attempt > 0 && (
+              <div className="text-xs mt-0.5 opacity-60">
+                The NBA API typically finalises box scores 15–30 min after the last game ends.
+              </div>
+            )}
+          </div>
+          {fetchState.status !== 'running' && (
+            <button
+              onClick={() => setFetchState({ status: 'idle', message: '', attempt: 0, max_attempts: 5, scored: 0, next_retry: null })}
+              className="text-xs opacity-50 hover:opacity-100 transition-opacity"
+            >✕</button>
+          )}
+        </div>
+      )}
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">

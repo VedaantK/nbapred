@@ -26,7 +26,7 @@ def _time_bucket() -> str:
 logger = setup_logging("paper_trader")
 
 DEFAULT_BANKROLL = 30.0
-MIN_EDGE = 0.10
+MIN_EDGE = 0.05
 KELLY_MULTIPLIER = 0.5   # half-Kelly for safety
 MAX_KELLY_FRACTION = 0.20  # never risk more than 20% of bankroll on one bet
 

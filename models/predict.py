@@ -134,8 +134,7 @@ def predict_today(db_path: str | Path = DB_PATH, game_date: str | None = None) -
     conn.execute("PRAGMA busy_timeout = 10000")
 
     try:
-        # Only predict players with an active Kalshi scoring market today.
-        # No sportsbook fallback — predictions are exclusively for Kalshi-available players.
+        # Prefer Kalshi-listed players; fall back to sportsbook players if Kalshi is empty.
         kalshi_rows = conn.execute(
             "SELECT DISTINCT player_name FROM prediction_market_lines "
             "WHERE game_date = ? AND source = 'kalshi'",
@@ -143,11 +142,23 @@ def predict_today(db_path: str | Path = DB_PATH, game_date: str | None = None) -
         ).fetchall()
         lined_player_names = [r[0] for r in kalshi_rows]
 
-        if not lined_player_names:
-            logger.info(f"No Kalshi markets found for {today} — run pipeline to fetch Kalshi odds first")
-            return []
+        if lined_player_names:
+            logger.info(f"Predicting {len(lined_player_names)} Kalshi-listed players for {today}")
+        else:
+            sb_rows = conn.execute(
+                "SELECT DISTINCT player_name FROM sportsbook_lines WHERE game_date = ?",
+                (today,),
+            ).fetchall()
+            lined_player_names = [r[0] for r in sb_rows]
+            if lined_player_names:
+                logger.info(
+                    f"No Kalshi data for {today} — falling back to "
+                    f"{len(lined_player_names)} sportsbook players"
+                )
 
-        logger.info(f"Predicting {len(lined_player_names)} Kalshi-listed players for {today}")
+        if not lined_player_names:
+            logger.warning(f"No lined players for {today} — run pipeline to fetch odds first")
+            return []
 
         predictions = []
 

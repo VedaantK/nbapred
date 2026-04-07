@@ -20,7 +20,7 @@ from models.rl_agent import RLBettingAgent, encode_state, ACTION_KELLY_MULT
 logger = setup_logging("market_scanner")
 
 SCAN_INTERVAL_SECONDS = 900    # 15 minutes
-SCANNER_MIN_EDGE = 0.10         # 10% edge required to place a bet
+SCANNER_MIN_EDGE = 0.05         # 5% edge required to place a bet
 MAX_KELLY_FRACTION = 0.20
 
 
