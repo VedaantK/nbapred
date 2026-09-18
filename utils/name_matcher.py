@@ -4,6 +4,7 @@ Player names differ across NBA API, Odds API, Kalshi, and Polymarket.
 """
 
 import re
+import unicodedata
 from difflib import SequenceMatcher
 
 
@@ -17,6 +18,13 @@ def normalize_name(name: str) -> str:
     if not name:
         return ""
     name = name.strip().lower()
+    # Strip accents so odds-feed spellings match NBA API spellings.
+    # "Luka Doncic" vs "Luka Dončić" otherwise scores 0.818 — below the 0.85
+    # threshold — and one of the busiest prop markets is silently dropped.
+    name = "".join(
+        c for c in unicodedata.normalize("NFD", name)
+        if unicodedata.category(c) != "Mn"
+    )
     name = _SUFFIXES.sub("", name)
     name = _EXTRA_SPACES.sub(" ", name)
     # Remove periods (e.g. "L. James" -> "L James")

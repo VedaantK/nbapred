@@ -77,6 +77,7 @@ class TorchMLPRegressor:
         self._n_features: int = 0
         self._mean: np.ndarray | None = None
         self._std: np.ndarray | None = None
+        self._impute_values: np.ndarray | None = None
 
     # ── internal helpers ─────────────────────────────────────────────────────
 
@@ -99,8 +100,13 @@ class TorchMLPRegressor:
         X = np.array(X, dtype=np.float32)
         y = np.array(y, dtype=np.float32)
 
-        # Replace NaN/inf with column medians (mirrors sklearn SimpleImputer)
-        col_medians = np.nanmedian(X, axis=0)
+        # Replace NaN/inf with column medians (mirrors sklearn SimpleImputer).
+        # A column that is entirely NaN has no median, so fall back to 0.0 and
+        # keep the result finite.
+        with np.errstate(all="ignore"):
+            col_medians = np.nanmedian(X, axis=0)
+        col_medians = np.nan_to_num(col_medians, nan=0.0, posinf=0.0, neginf=0.0)
+        self._impute_values = col_medians
         nan_mask = ~np.isfinite(X)
         X[nan_mask] = np.take(col_medians, np.where(nan_mask)[1])
 
@@ -120,6 +126,10 @@ class TorchMLPRegressor:
 
         best_loss = float("inf")
         patience_counter = 0
+        # Seed with the initial weights: if epoch 1 never improves on inf
+        # (which happens whenever the loss is NaN), the restore below used to
+        # raise UnboundLocalError instead of failing cleanly.
+        best_state = {k: v.clone() for k, v in model.state_dict().items()}
 
         model.train()
         for epoch in range(self.epochs):
@@ -160,7 +170,12 @@ class TorchMLPRegressor:
                 raise RuntimeError("TorchMLPRegressor has not been fitted yet.")
 
         X = np.array(X, dtype=np.float32)
-        col_medians = np.zeros(X.shape[1])
+        # Impute with the values learned during fit, not zeros — imputing zeros
+        # here while fit() used medians made every missing feature land far
+        # from where the model was trained to expect it.
+        col_medians = getattr(self, "_impute_values", None)
+        if col_medians is None or len(col_medians) != X.shape[1]:
+            col_medians = np.zeros(X.shape[1])
         nan_mask = ~np.isfinite(X)
         X[nan_mask] = np.take(col_medians, np.where(nan_mask)[1])
         X_norm = self._normalize(X)

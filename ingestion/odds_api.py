@@ -11,16 +11,117 @@ from pathlib import Path
 
 import requests
 
-from config.settings import ODDS_API_KEY, DB_PATH, CACHE_DIR
+from config.settings import (
+    ODDS_API_KEY, DB_PATH, CACHE_DIR,
+    ODDS_CACHE_TTL_HOURS, ODDS_API_RESERVE_CREDITS,
+    ODDS_API_MAX_EVENTS_PER_RUN, ODDS_API_MAX_RUNS_PER_DAY,
+)
 from config.logging_config import setup_logging
 
 logger = setup_logging("odds_api")
 
 BASE_URL = "https://api.the-odds-api.com/v4"
-CACHE_TTL_HOURS = 2
+CACHE_TTL_HOURS = ODDS_CACHE_TTL_HOURS
 
 # (connect_timeout, read_timeout)
 _TIMEOUT = (5, 8)
+
+
+# ── quota tracking ────────────────────────────────────────────────────────────
+# The API reports the remaining balance in an x-requests-remaining header on
+# every response. This module used to log that number and throw it away; now it
+# is persisted and enforced, so a runaway caller stops before the quota is gone
+# rather than after.
+
+def _budget_path() -> Path:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return CACHE_DIR / "odds_api_budget.json"
+
+
+def _load_budget() -> dict:
+    try:
+        with open(_budget_path()) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_budget(state: dict):
+    try:
+        with open(_budget_path(), "w") as f:
+            json.dump(state, f)
+    except OSError as e:
+        logger.debug(f"Could not persist odds budget: {e}")
+
+
+def _record_remaining(resp) -> int | None:
+    """Store the balance the API just reported. Returns it, or None if absent."""
+    raw = resp.headers.get("x-requests-remaining")
+    if raw is None:
+        return None
+    try:
+        remaining = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    state = _load_budget()
+    state["remaining"] = remaining
+    state["checked_at"] = datetime.now().isoformat(timespec="seconds")
+    used = resp.headers.get("x-requests-used")
+    if used is not None:
+        state["used"] = used
+    _save_budget(state)
+
+    if remaining <= ODDS_API_RESERVE_CREDITS:
+        logger.error(
+            f"Odds API balance is {remaining}, at or below the reserve of "
+            f"{ODDS_API_RESERVE_CREDITS}. Further fetches will be skipped."
+        )
+    elif remaining <= ODDS_API_RESERVE_CREDITS * 3:
+        logger.warning(f"Odds API balance running low: {remaining} credits left")
+    else:
+        logger.info(f"Odds API requests remaining: {remaining}")
+    return remaining
+
+
+def budget_exhausted() -> bool:
+    """True when the last reported balance sits at or below the reserve."""
+    remaining = _load_budget().get("remaining")
+    return remaining is not None and remaining <= ODDS_API_RESERVE_CREDITS
+
+
+def _check_and_count_run(game_date: str) -> bool:
+    """
+    Allow at most ODDS_API_MAX_RUNS_PER_DAY credit-spending runs per calendar
+    day. The dashboard exposes pipeline runs as a button with no rate limit; at
+    the old 2-hour cache that was up to ~90 credits a day.
+    """
+    state = _load_budget()
+    today = date.today().strftime("%Y-%m-%d")
+    if state.get("run_date") != today:
+        state["run_date"] = today
+        state["runs"] = 0
+    if state.get("runs", 0) >= ODDS_API_MAX_RUNS_PER_DAY:
+        logger.warning(
+            f"Already ran {state['runs']} odds fetches today "
+            f"(limit {ODDS_API_MAX_RUNS_PER_DAY}). Serving cache only."
+        )
+        return False
+    state["runs"] = state.get("runs", 0) + 1
+    _save_budget(state)
+    return True
+
+
+def get_budget_status() -> dict:
+    """Balance snapshot for the API layer / dashboard."""
+    state = _load_budget()
+    return {
+        "remaining": state.get("remaining"),
+        "reserve": ODDS_API_RESERVE_CREDITS,
+        "checked_at": state.get("checked_at"),
+        "runs_today": state.get("runs", 0) if state.get("run_date") == date.today().strftime("%Y-%m-%d") else 0,
+        "max_runs_per_day": ODDS_API_MAX_RUNS_PER_DAY,
+        "exhausted": budget_exhausted(),
+    }
 
 
 def _cache_path(name: str, game_date: str) -> Path:
@@ -76,8 +177,9 @@ def get_todays_nba_events(game_date: str | None = None) -> list[dict]:
 
     try:
         resp = requests.get(url, params=params, timeout=_TIMEOUT)
-        remaining = resp.headers.get("x-requests-remaining", "?")
-        logger.info(f"Odds API requests remaining: {remaining}")
+        # This endpoint is free, but its response still carries the balance —
+        # a zero-cost way to refresh what we know before spending anything.
+        _record_remaining(resp)
         resp.raise_for_status()
         all_events = resp.json()
     except requests.RequestException as e:
@@ -107,10 +209,20 @@ def get_todays_nba_events(game_date: str | None = None) -> list[dict]:
 
 
 def get_player_points_props(event_id: str, game_date: str) -> list[dict]:
-    """For a given event, fetch player points over/under lines."""
+    """
+    For a given event, fetch player points over/under lines.
+
+    Costs 1 credit (one market x one region). Cache is checked first, and the
+    balance is re-checked here as well as in the caller, because this runs on a
+    thread pool and a batch can drain the reserve mid-flight.
+    """
     cached = _load_cache(f"props_{event_id}", game_date)
     if cached is not None:
         return cached
+
+    if budget_exhausted():
+        logger.warning(f"Skipping props for event {event_id}: Odds API reserve reached")
+        return []
 
     url = f"{BASE_URL}/sports/basketball_nba/events/{event_id}/odds"
     params = {
@@ -122,8 +234,7 @@ def get_player_points_props(event_id: str, game_date: str) -> list[dict]:
 
     try:
         resp = requests.get(url, params=params, timeout=_TIMEOUT)
-        remaining = resp.headers.get("x-requests-remaining", "?")
-        logger.info(f"Fetched props for event {event_id}. Requests remaining: {remaining}")
+        _record_remaining(resp)
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as e:
@@ -187,7 +298,36 @@ def fetch_and_store_all_props(db_path: str | Path = DB_PATH, game_date: str | No
         logger.warning("Events returned but none had IDs")
         return
 
-    logger.info(f"Fetching props for {len(event_ids)} events in parallel ({target_date})...")
+    # Anything not already cached costs one credit, so apply the guards to the
+    # uncached remainder only — a cache-served run is free and unlimited.
+    uncached = [eid for eid in event_ids if _load_cache(f"props_{eid}", target_date) is None]
+
+    if uncached:
+        if budget_exhausted():
+            status = get_budget_status()
+            logger.error(
+                f"Odds API balance {status['remaining']} is at or below the reserve of "
+                f"{status['reserve']} — serving cache only for {target_date}."
+            )
+            uncached = []
+        elif not _check_and_count_run(target_date):
+            uncached = []
+        elif len(uncached) > ODDS_API_MAX_EVENTS_PER_RUN:
+            logger.warning(
+                f"{len(uncached)} uncached events exceeds the per-run cap of "
+                f"{ODDS_API_MAX_EVENTS_PER_RUN}; fetching the first {ODDS_API_MAX_EVENTS_PER_RUN}."
+            )
+            uncached = uncached[:ODDS_API_MAX_EVENTS_PER_RUN]
+
+    # Cached events still need reading; they just cost nothing.
+    event_ids = uncached + [eid for eid in event_ids if eid not in set(uncached) and _load_cache(f"props_{eid}", target_date) is not None]
+    if not event_ids:
+        logger.info(f"Nothing to fetch for {target_date} (budget guard or empty slate)")
+        return
+
+    logger.info(
+        f"Fetching props for {len(event_ids)} events ({len(uncached)} will cost credits) — {target_date}"
+    )
 
     # Do NOT use `with ThreadPoolExecutor` — its __exit__ calls shutdown(wait=True)
     # which blocks until all threads finish, defeating the as_completed timeout.

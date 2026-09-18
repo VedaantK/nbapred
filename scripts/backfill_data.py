@@ -42,7 +42,13 @@ def get_top_players(n: int = TOP_PLAYERS_COUNT) -> list[dict]:
     try:
         import pandas as pd
         usage_df = get_player_usage_rates(NBA_SEASONS[0])
-        if not usage_df.empty and "player_id" in usage_df.columns:
+        if not usage_df.empty and "usage_rate" in usage_df.columns:
+            # The endpoint returns players alphabetically, so .head(n) was
+            # taking "A.J. Lawson, AJ Green, Aaron Gordon..." rather than the
+            # highest-usage players. Sort before slicing — these are the players
+            # who actually have prop markets, and therefore the ones worth
+            # spending the backfill's API budget on.
+            usage_df = usage_df.sort_values("usage_rate", ascending=False)
             top_ids = set(usage_df.head(n)["player_id"].tolist())
             top_players = [p for p in players if p["id"] in top_ids]
             if top_players:

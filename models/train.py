@@ -227,6 +227,22 @@ def train_all_models(db_path: str | Path = DB_PATH) -> dict:
     with open(MODELS_DIR / "feature_names.json", "w") as f:
         json.dump(feature_cols, f)
 
+    # Persist the metrics too. They used to exist only as a log line, so
+    # nothing downstream — the API, the dashboard export — could read how the
+    # models actually scored without retraining.
+    from datetime import datetime as _dt
+    metrics_blob = {
+        "trained_at": _dt.now().isoformat(timespec="seconds"),
+        "train_rows": int(len(X_train)),
+        "test_rows": int(len(X_test)),
+        "n_features": len(feature_cols),
+        "attempted": list(models_config.keys()),
+        "models": {name: info["metrics"] for name, info in results.items()},
+    }
+    with open(MODELS_DIR / "metrics.json", "w") as f:
+        json.dump(metrics_blob, f, indent=2)
+    logger.info(f"Metrics saved to {MODELS_DIR / 'metrics.json'}")
+
     logger.info("Training complete. Models saved to disk.")
     return results
 

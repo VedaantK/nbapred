@@ -8,6 +8,7 @@ import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from config.settings import DB_PATH, REQUEST_DELAY, NBA_SEASONS
@@ -68,8 +69,17 @@ def get_player_game_logs(player_id: int, season: str = "2024-25") -> pd.DataFram
     }
     df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
 
-    # Normalize game_date to YYYY-MM-DD
-    df["game_date"] = pd.to_datetime(df["game_date"]).dt.strftime("%Y-%m-%d")
+    # Normalize game_date to YYYY-MM-DD.
+    #
+    # The API returns "Apr 12, 2026" — abbreviated month. Left to infer, pandas
+    # reads the first row to pick a format, and a season whose first row falls
+    # in May ("May 16, 2021") looks like a full month name (%B), so every
+    # abbreviated row after it raises. That killed the whole backfill on the
+    # 2020-21 season. Parse the known format explicitly instead.
+    parsed = pd.to_datetime(df["game_date"], format="%b %d, %Y", errors="coerce")
+    if parsed.isna().any():
+        parsed = pd.to_datetime(df["game_date"], format="mixed", errors="coerce")
+    df["game_date"] = parsed.dt.strftime("%Y-%m-%d")
 
     # Derive is_home from matchup string
     df["is_home"] = df["matchup"].apply(lambda m: 1 if "vs." in str(m) else 0)
@@ -80,37 +90,80 @@ def get_player_game_logs(player_id: int, season: str = "2024-25") -> pd.DataFram
     return df
 
 
+def _season_end_date(season: str) -> str:
+    """'2024-25' -> '2025-06-30'. Dates a season's snapshot to when it finished."""
+    try:
+        return f"{int(season.split('-')[0]) + 1}-06-30"
+    except (ValueError, IndexError):
+        return date.today().strftime("%Y-%m-%d")
+
+
 def get_team_defensive_stats(season: str = "2024-25") -> pd.DataFrame:
-    """Pull team-level defensive ratings and pace."""
+    """
+    Pull team-level defensive rating, pace, and opponent points allowed.
+
+    Two calls are needed: DEF_RATING and PACE live under the Advanced measure
+    type, but points allowed does not — it is OPP_PTS under Opponent. (The old
+    OPP_PTS_OFF_TOV mapping was both absent from Advanced and the wrong stat:
+    points off turnovers, not points allowed.)
+    """
     from nba_api.stats.endpoints import LeagueDashTeamStats
+    from nba_api.stats.static import teams as _static_teams
 
     try:
         _sleep()
-        stats = LeagueDashTeamStats(
+        adv = LeagueDashTeamStats(
             season=season,
             measure_type_detailed_defense="Advanced",
-            per_mode_simple="PerGame",
-        )
-        df = stats.get_data_frames()[0]
+            per_mode_detailed="PerGame",
+        ).get_data_frames()[0]
     except Exception as e:
-        logger.warning(f"Failed to fetch team defensive stats for {season}: {e}")
+        logger.warning(f"Failed to fetch team advanced stats for {season}: {e}")
         return pd.DataFrame()
 
-    if df.empty:
-        return df
+    if adv.empty:
+        return adv
 
-    rename = {
+    df = adv.rename(columns={
         "TEAM_ID": "team_id",
-        "TEAM_ABBREVIATION": "team_abbreviation",
         "DEF_RATING": "defensive_rating",
         "PACE": "pace",
-        "OPP_PTS_OFF_TOV": "opp_points_allowed",
-    }
-    df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
-    df["season"] = season
-    df["game_date"] = date.today().strftime("%Y-%m-%d")
+    })
 
-    keep = ["team_id", "team_abbreviation", "season", "game_date", "defensive_rating", "pace", "opp_points_allowed"]
+    # Opponent points allowed — separate measure type, non-fatal if it fails.
+    try:
+        _sleep()
+        opp = LeagueDashTeamStats(
+            season=season,
+            measure_type_detailed_defense="Opponent",
+            per_mode_detailed="PerGame",
+        ).get_data_frames()[0]
+        if "OPP_PTS" in opp.columns:
+            opp = opp.rename(columns={"TEAM_ID": "team_id", "OPP_PTS": "opp_points_allowed"})
+            df = df.merge(opp[["team_id", "opp_points_allowed"]], on="team_id", how="left")
+    except Exception as e:
+        logger.warning(f"Failed to fetch opponent points for {season}: {e}")
+
+    if "opp_points_allowed" not in df.columns:
+        df["opp_points_allowed"] = np.nan
+
+    # LeagueDashTeamStats returns TEAM_NAME, never TEAM_ABBREVIATION. Without
+    # this map every row stored a blank abbreviation and the join in
+    # features/engineer.py — which matches on "GSW"-style codes parsed out of
+    # the matchup string — silently matched nothing.
+    abbr_by_id = {t["id"]: t["abbreviation"] for t in _static_teams.get_teams()}
+    df["team_abbreviation"] = df["team_id"].map(abbr_by_id)
+
+    df["season"] = season
+    # Date each snapshot to the end of ITS season rather than today. Two
+    # reasons: team_stats is UNIQUE(team_id, game_date), so writing every
+    # season with today's date meant only the first season backfilled survived;
+    # and a season-stamped row lets the feature builder pick a snapshot that
+    # predates the game it is describing.
+    df["game_date"] = _season_end_date(season)
+
+    keep = ["team_id", "team_abbreviation", "season", "game_date",
+            "defensive_rating", "pace", "opp_points_allowed"]
     return df[[c for c in keep if c in df.columns]]
 
 
@@ -149,7 +202,7 @@ def get_player_usage_rates(season: str = "2024-25") -> pd.DataFrame:
         stats = LeagueDashPlayerStats(
             season=season,
             measure_type_detailed_defense="Usage",
-            per_mode_simple="PerGame",
+            per_mode_detailed="PerGame",
         )
         df = stats.get_data_frames()[0]
     except Exception as e:

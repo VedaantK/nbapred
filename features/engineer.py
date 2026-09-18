@@ -143,18 +143,31 @@ def _get_player_season_avg(player_id: int, conn: sqlite3.Connection, window: int
     return float(np.mean([r[0] for r in rows if r[0] is not None]))
 
 
-def _load_team_stats(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Load the most recent team stats available."""
+_TEAM_STAT_COLS = ["team_abbreviation", "defensive_rating", "pace", "opp_points_allowed"]
+
+
+def _load_team_stats(conn: sqlite3.Connection, before_date: str) -> pd.DataFrame:
+    """
+    Most recent team stats snapshot recorded STRICTLY BEFORE before_date.
+
+    Previously this took the latest snapshot outright, so a 2021 training row
+    was described with this season's defensive ratings — future information
+    leaking into a historical example.
+    """
     df = pd.read_sql_query(
         """
-        SELECT team_abbreviation, defensive_rating, pace, opp_points_allowed
+        SELECT team_abbreviation, defensive_rating, pace, opp_points_allowed, game_date
         FROM team_stats
+        WHERE game_date < ? AND team_abbreviation IS NOT NULL AND team_abbreviation != ''
         ORDER BY game_date DESC
         """,
         conn,
+        params=(before_date,),
     )
-    # Keep only most recent row per team
-    return df.groupby("team_abbreviation").first().reset_index()
+    if df.empty:
+        return pd.DataFrame(columns=_TEAM_STAT_COLS)
+    # Rows arrive newest-first, so the first per team is the latest valid one.
+    return df.drop_duplicates(subset="team_abbreviation", keep="first").reset_index(drop=True)
 
 
 STAR_PPG_THRESHOLD = 18.0  # PPG threshold to classify a player as a "star"
@@ -235,7 +248,7 @@ def build_features_for_player(
 
     try:
         logs = _load_player_logs(player_id, game_date, conn)
-        team_stats = _load_team_stats(conn)
+        team_stats = _load_team_stats(conn, game_date)
         injury_map = _load_injury_data(game_date, conn)
 
         # Build injury features using open connection (needs PPG lookups)
@@ -347,15 +360,24 @@ def build_features_for_player(
     # Minutes floor: minimum minutes in last 5 games (guaranteed playing time)
     features["min_floor_last5"] = _scalar(_rolling_stat(mins, 5, "min"))
 
-    # Usage rate: pull from logs if available, else NaN
+    # Usage rate: only emitted when the column actually holds data.
+    #
+    # player_game_logs.usage_rate exists in the schema but nothing ever writes
+    # to it — get_player_usage_rates() is only used to rank players during
+    # backfill, and its result is never persisted. So these two features were
+    # NaN in 100% of rows, which is what made the neural net's median
+    # imputation produce a NaN loss and crash the run.
+    #
+    # Emitting them conditionally means they simply drop out of the feature set
+    # until there is a real per-game usage write path. Note that the obvious
+    # shortcut — writing a season-average usage onto every game row — would
+    # backdate end-of-season usage onto October games, so it is deliberately
+    # not done here.
     if "usage_rate" in logs.columns and logs["usage_rate"].notna().any():
         usage = logs["usage_rate"].astype(float)
         # Use .values[-1] instead of .iloc[-1] to guarantee a numpy scalar, not a Series
         features["usage_rate"] = _scalar(usage.values[-1]) if not usage.empty else np.nan
         features["avg_usage_last_5"] = _scalar(_rolling_stat(usage, 5, "mean"))
-    else:
-        features["usage_rate"] = np.nan
-        features["avg_usage_last_5"] = np.nan
 
     # ── Context features ──────────────────────────────────────────────────
     features["is_home"] = int(is_home)

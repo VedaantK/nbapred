@@ -22,3 +22,6 @@ dashboard/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Dashboard export (regenerate with scripts/export_dashboard.py)
+dashboard_export.json
