@@ -40,8 +40,8 @@ Each event's props cost 1 credit, so the client in `ingestion/odds_api.py` enfor
 ## Quickstart
 
 ```bash
-git clone https://github.com/VedaantK/Nba-Predictor.git
-cd Nba-Predictor
+git clone https://github.com/VedaantK/nbapred.git
+cd nbapred
 
 python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -68,7 +68,7 @@ For a step-by-step walkthrough including Windows commands and troubleshooting, s
 ## Project Structure
 
 ```
-Nba-Predictor/
+nbapred/
 ├── config/          # Settings, DB init, logging
 ├── ingestion/       # NBA API, Odds API, Kalshi, Polymarket, injuries
 ├── features/        # Feature engineering (35+ features)
