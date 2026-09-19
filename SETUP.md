@@ -20,11 +20,9 @@ Full-stack NBA player points predictor with ML ensemble, prediction market integ
 ## 1. Clone the Repository
 
 ```bash
-git clone https://github.com/USERNAME/nba-predictor.git
-cd nba-predictor
+git clone https://github.com/VedaantK/nbaPred.git
+cd nbaPred
 ```
-
-Replace `USERNAME` with your GitHub username.
 
 ---
 
@@ -95,7 +93,7 @@ This creates `data/nba_predictor.db` with all required tables.
 Pull 3 seasons of player game logs and team stats (needed to train models):
 
 ```bash
-python scripts/backfill_data.py
+python -m scripts.backfill_data
 ```
 
 This makes many requests to the NBA API with rate limiting — expect **10–30 minutes**. Run it once; it uses `INSERT OR IGNORE` so re-running is safe.
@@ -105,7 +103,7 @@ This makes many requests to the NBA API with rate limiting — expect **10–30 
 ## 6. Train the Models
 
 ```bash
-python models/train.py
+python train.py
 ```
 
 Trains all 4 models (Linear Regression, Random Forest, XGBoost, Neural Net) and saves them to `models/saved/`. Takes **2–10 minutes** on CPU.
@@ -166,7 +164,7 @@ Once set up, each day:
 ## Project Structure
 
 ```
-nba-predictor/
+nbaPred/
 ├── api/                  FastAPI server (server.py)
 ├── config/               Settings, DB schema, logging
 ├── dashboard/            Vite + React + Tailwind frontend
@@ -189,7 +187,7 @@ nba-predictor/
 Make sure `.env` exists in the project root and contains `ODDS_API_KEY=your_key`.
 
 **`No trained models found`**
-Run `python models/train.py` first. You also need historical data — run `python scripts/backfill_data.py` before training.
+Run `python train.py` first. You also need historical data — run `python -m scripts.backfill_data` before training.
 
 **NBA API timeouts**
 The NBA API rate-limits aggressively. If `backfill_data.py` fails partway through, just re-run it — already-stored rows are skipped.
