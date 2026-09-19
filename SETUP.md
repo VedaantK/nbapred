@@ -20,8 +20,8 @@ Full-stack NBA player points predictor with ML ensemble, prediction market integ
 ## 1. Clone the Repository
 
 ```bash
-git clone https://github.com/VedaantK/nbaPred.git
-cd nbaPred
+git clone https://github.com/VedaantK/Nba-Predictor.git
+cd Nba-Predictor
 ```
 
 ---
@@ -164,7 +164,7 @@ Once set up, each day:
 ## Project Structure
 
 ```
-nbaPred/
+Nba-Predictor/
 ├── api/                  FastAPI server (server.py)
 ├── config/               Settings, DB schema, logging
 ├── dashboard/            Vite + React + Tailwind frontend
