@@ -155,6 +155,7 @@ def train_all_models(db_path: str | Path = DB_PATH) -> dict:
     y_train = y[train_idx]
     X_test = X.iloc[test_idx]
     y_test = y[test_idx]
+    test_dates = dates.iloc[test_idx]
 
     logger.info(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
 
@@ -235,6 +236,8 @@ def train_all_models(db_path: str | Path = DB_PATH) -> dict:
         "trained_at": _dt.now().isoformat(timespec="seconds"),
         "train_rows": int(len(X_train)),
         "test_rows": int(len(X_test)),
+        "test_start": test_dates.min().strftime("%Y-%m-%d"),
+        "test_end": test_dates.max().strftime("%Y-%m-%d"),
         "n_features": len(feature_cols),
         "attempted": list(models_config.keys()),
         "models": {name: info["metrics"] for name, info in results.items()},

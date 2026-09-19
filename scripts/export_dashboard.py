@@ -101,6 +101,8 @@ def collect_models() -> dict:
         "trained_at": blob.get("trained_at"),
         "train_rows": blob.get("train_rows"),
         "test_rows": blob.get("test_rows"),
+        "test_start": blob.get("test_start"),
+        "test_end": blob.get("test_end"),
         "n_features": blob.get("n_features"),
         "models": models,
     }
