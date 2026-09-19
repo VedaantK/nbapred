@@ -152,8 +152,6 @@ def collect_sources(conn) -> list:
     must not imply a health check it did not perform.
     """
     sb = _scalar(conn, "SELECT COUNT(*) FROM sportsbook_lines")
-    kalshi = _scalar(conn, "SELECT COUNT(*) FROM prediction_market_lines WHERE source='kalshi'")
-    poly = _scalar(conn, "SELECT COUNT(*) FROM prediction_market_lines WHERE source='polymarket'")
     injuries = _scalar(conn, "SELECT COUNT(*) FROM injury_status")
     logs = _scalar(conn, "SELECT COUNT(*) FROM player_game_logs")
 
@@ -162,10 +160,6 @@ def collect_sources(conn) -> list:
          "rows": logs, "status": "live" if logs else "empty"},
         {"name": "The Odds API", "detail": "sportsbook player props",
          "rows": sb, "status": "live" if sb else "awaiting season"},
-        {"name": "Kalshi", "detail": "prediction market",
-         "rows": kalshi, "status": "live" if kalshi else "awaiting fix"},
-        {"name": "Polymarket", "detail": "prediction market",
-         "rows": poly, "status": "live" if poly else "awaiting fix"},
         {"name": "ESPN", "detail": "injury reports",
          "rows": injuries, "status": "live" if injuries else "awaiting fix"},
     ]

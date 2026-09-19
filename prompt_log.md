@@ -17,13 +17,13 @@ AI tools used to build and debug this project.
 
 ### 1. Audit the existing repo and identify the APIs
 
-> Can you look at this github repo https://github.com/VedaantK/nbaPred.git and make sure that everything is just running ok, and there are no major bugs or API errors. Then tell me two things. How hard would it be to have this project along with the NBA also apply to the NFL and also tell me what API's this project uses. Also I want to add this to this website of mine so do that as well. https://github.com/VedaantK/VedaantK.github.io.git
+> Can you look at this github repo https://github.com/VedaantK/nbaPred.git and make sure that everything is just running ok, and there are no major bugs errors. igure out how to integrate the Odds API so that you can compare your predictions with the SportsBook.Then tell me two things. Also I want to add this to this website of mine so do that as well. https://github.com/VedaantK/VedaantK.github.io.git
 
 This one mattered most. Asking for an audit rather than a feature surfaced four real bugs that I would not have found by reading the code myself: dead query parameters being sent to The Odds API events endpoint, look-ahead bias in the feature engineering (rolling averages were including the game being predicted), a crash on date handling, and no guard at all on the 500-request monthly quota. These became commit `856a248`.
 
 ### 2. Get a running system back from a broken checkout
 
-> Can you outline everything I need to do, to get the system up and running again, and all the system fully running
+> Can you outline everything I need to do, to get the system up and running again, and all the system fully running.
 
 Asking for an ordered checklist instead of "fix it" gave me something I could actually follow across two machines, and it became the basis for `SETUP.md`.
 
@@ -51,6 +51,46 @@ This is where the architecture decision got made. Because The Odds API needs a k
 ### 6. Ship it
 
 > Can you first commit and push it to the website, we can fix the problems later
+
+### 7. Shorten the README to meet the assignment's grading rubric
+
+> Can you edit the read me to be shorter but still meets all of this critera README: In the repo README, include 3–5 sentences that explain (at a high level) how the API is called (for example, what modules are used if any, what key parameters are provided, and what format / data types are returned). If your code requires an API key or other authentication, provide information on how to obtain and use that API key (WITHOUT exposing the key itself in the repo). Also include brief instructions for running your code: what to install, and what command or file to run.
+
+First pass just trimmed prose inside the existing six-heading structure. A follow-up —
+
+> No, It should only be 3-5 sentances though, that explain the whole project at a high level and also the use of the API
+
+— clarified that the 3-5 sentence limit was meant for the entire opening explanation, not a separate constraint layered on top of the existing sections. Lesson: "shorter" is ambiguous about scope, and a rubric quoted back verbatim doesn't mean each clause deserves its own heading.
+
+### 8. Confirm the API key never touched git history
+
+> it says this whole paragraph about how the API key should never be posted to github and I know right now it is in the gitignore but how do I make sure it has never been pushed
+
+(Prompt continued with the assignment's pasted privacy-note paragraph about zero-tolerance for committed secrets.) `.gitignore` only prevents *future* accidental commits, so instead of just re-reading the ignore rule I searched the actual history: `git log --all --full-history` for a `.env` file ever being added, and `git log --all -p` grepped for the literal key value read from the local `.env` (without ever printing the key itself in output). Came back clean on both.
+
+### 9. Add more data to the dashboard
+
+> add some more data to the github page, maybe from last season any predictuons or anything else that can be added
+
+Rather than invent new numbers, I checked what `export_dashboard.py` was already collecting and found a `per_season` row-count breakdown already sitting in `data.json`, unrendered. Added a "Games Per Season" chart to surface that real, already-computed data instead of fabricating something new. (Removed again in item 11, once the dashboard was being finalized and that section no longer earned its place.)
+
+### 10. Ask whether last season's data could demonstrate the model working
+
+> Is there any data that you have from last season maybe that could show the model working or not since it is currently offsseason
+
+Best prompt of the session — phrased as a question, which forced an actual investigation instead of a quick edit. Tracing `models/train.py`'s time-based 80/20 split against the per-season row counts showed the held-out test window lands almost entirely inside the 2025-26 season (2025-11-07 to 2026-04-12). The MODEL ACCURACY numbers already on the dashboard were a genuine last-season backtest — just mislabeled as a generic "test set." Persisted `test_start`/`test_end` into `metrics.json` (rather than hardcoding the one date range already computed) so future retrains keep the label accurate automatically.
+
+### 11. Finalize the dashboard for submission
+
+> Yes, commit and push it all. Also get the github page fully finihsed ready for the final submisson. Get rid of the Games per season section.
+
+"Fully finished" prompted a full re-read of the page rather than just the one requested removal, which caught a real inconsistency: the intro paragraph named only 3 of the 4 trained models, missing the neural net that the MODEL ACCURACY section was already rendering.
+
+### 12. Update this log, and drop unimplemented sources from the dashboard
+
+> Can you update the prompt log to add all the new things we talked about. Also since there is no Kalshi or Polymarket integration right now you can get rid of it from the github pages.
+
+Good instinct on the second half — the DATA SOURCES panel was showing Kalshi and Polymarket permanently red ("awaiting fix", 0 rows), which reads as broken rather than simply not built yet. Removed both from `collect_sources()` in `export_dashboard.py` and re-exported `data.json`, rather than special-casing them out in the page's JS, so the static site and any future local export stay driven by one source of truth.
 
 ---
 
