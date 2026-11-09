@@ -27,14 +27,16 @@ MODELS_DIR = PROJECT_ROOT / "models" / "saved"
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 
 # Kalshi API (public, no key needed for market data)
-KALSHI_BASE_URL = "https://trading-api.kalshi.com/trade-api/v2"
+# trading-api.kalshi.com now returns 401; public market data moved here.
+KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 
 # Polymarket CLOB API (public, no key needed for market data)
 POLYMARKET_BASE_URL = "https://clob.polymarket.com"
 POLYMARKET_GAMMA_URL = "https://gamma-api.polymarket.com"
 
 # NBA API settings
-NBA_SEASONS = ["2025-26", "2024-25", "2023-24", "2022-23", "2021-22", "2020-21"]  # 6 seasons for training data
+# Newest first: NBA_SEASONS[0] is treated as the current season (used to rank players).
+NBA_SEASONS = ["2026-27", "2025-26", "2024-25", "2023-24", "2022-23", "2021-22", "2020-21"]
 REQUEST_DELAY = 0.6  # Seconds between nba_api requests (rate limit)
 
 # ── The Odds API budget ───────────────────────────────────────────────────────
@@ -57,3 +59,4 @@ CONFIDENCE_THRESHOLD = 0.60  # 60% confidence minimum to surface prediction
 
 # Top players to track (starters + key bench scorers)
 TOP_PLAYERS_COUNT = 150
+MIN_MINUTES_FOR_RANKING = 20  # MPG floor before a player's usage rate counts for ranking

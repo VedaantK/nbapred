@@ -78,15 +78,28 @@ def _build_xgb_pipeline() -> Pipeline:
 
 def _directional_accuracy(y_true: np.ndarray, y_pred: np.ndarray, lines: np.ndarray) -> float:
     """
-    Percentage of games where the model correctly called over/under.
-    Requires sportsbook lines — approximated by season avg when unavailable.
+    Percentage of games where the model correctly called over/under `lines`.
+
+    `lines` must be per-game. A single league-wide constant (the old fallback,
+    median of all test points) mostly measures "is this a starter or a bench
+    player", which inflated the score to ~77%. Without real sportsbook lines,
+    use each player's pre-game rolling average (see _proxy_lines).
     """
     if lines is None or len(lines) != len(y_true):
-        # Fallback: use median as the line
-        lines = np.full(len(y_true), np.median(y_true))
+        raise ValueError("directional accuracy needs one line per game")
     true_over = y_true > lines
     pred_over = y_pred > lines
     return float(np.mean(true_over == pred_over))
+
+
+def _proxy_lines(X: pd.DataFrame, y_fallback: np.ndarray) -> np.ndarray:
+    """Stand-in prop line per game: the player's average over his previous 10
+    games (pre-game, no leakage), else his longer average, else the median."""
+    line = pd.Series(np.nan, index=X.index, dtype=float)
+    for col in ("avg_points_last_10", "avg_points_season", "avg_points_last_5"):
+        if col in X.columns:
+            line = line.fillna(X[col].astype(float))
+    return line.fillna(float(np.median(y_fallback))).values
 
 
 def get_feature_importance(model_pipeline: Pipeline, feature_names: list[str]) -> pd.DataFrame:
@@ -158,6 +171,7 @@ def train_all_models(db_path: str | Path = DB_PATH) -> dict:
     test_dates = dates.iloc[test_idx]
 
     logger.info(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
+    test_lines = _proxy_lines(X_test, y_train)
 
     models_config = {
         "linear_regression": _build_lr_pipeline(),
@@ -189,7 +203,7 @@ def train_all_models(db_path: str | Path = DB_PATH) -> dict:
 
         mae = mean_absolute_error(y_test, preds)
         rmse = root_mean_squared_error(y_test, preds)
-        dir_acc = _directional_accuracy(y_test, preds, lines=None)
+        dir_acc = _directional_accuracy(y_test, preds, lines=test_lines)
 
         # Compute residuals on test set (actual - predicted)
         residuals = (y_test - preds).tolist()

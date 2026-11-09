@@ -133,6 +133,14 @@ def predict_today(db_path: str | Path = DB_PATH, game_date: str | None = None) -
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA busy_timeout = 10000")
 
+    # The static list above lags a season (no current rookies). Every player we
+    # can predict must have game logs anyway, so add the DB's own names/IDs.
+    for pid, name in conn.execute(
+        "SELECT player_id, player_name FROM player_game_logs GROUP BY player_id"
+    ):
+        player_name_to_id[name] = pid
+    all_nba_names = list(player_name_to_id.keys())
+
     try:
         # Prefer Kalshi-listed players; fall back to sportsbook players if Kalshi is empty.
         kalshi_rows = conn.execute(

@@ -216,9 +216,15 @@ def get_player_usage_rates(season: str = "2024-25") -> pd.DataFrame:
         "PLAYER_ID": "player_id",
         "PLAYER_NAME": "player_name",
         "USG_PCT": "usage_rate",
+        "GP": "games_played",
+        "MIN": "minutes",
     }
     df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
-    return df[["player_id", "player_name", "usage_rate"]] if "usage_rate" in df.columns else df
+    # games_played/minutes are kept so callers can drop low-minute players, whose
+    # usage rate is noise (a two-way player with garbage-time minutes can post 50%).
+    cols = [c for c in ["player_id", "player_name", "usage_rate", "games_played", "minutes"]
+            if c in df.columns]
+    return df[cols] if "usage_rate" in df.columns else df
 
 
 def get_yesterdays_results(game_date: str | None = None) -> pd.DataFrame:

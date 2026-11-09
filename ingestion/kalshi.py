@@ -69,101 +69,87 @@ def _fetch_kalshi_markets_page(endpoint: str, params: dict) -> list[dict]:
     return all_items
 
 
-def _parse_market_item(item: dict, target_date: str) -> dict | None:
-    """Parse a single Kalshi market/event item into our standard format. Returns None if unparseable."""
-    title = item.get("title", item.get("event_title", ""))
-    ticker = item.get("ticker", item.get("event_ticker", ""))
+# Kalshi's NBA player-points series. Each player gets a ladder of markets
+# ("Keldon Johnson: 15+ points", "...: 20+ points"), one per strike.
+PLAYER_POINTS_SERIES = "KXNBAPTS"
+_EVENT_DATE = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})")  # KXNBAPTS-26NOV09SASPHX -> 26 NOV 09
+_MONTHS = {m: i for i, m in enumerate(
+    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], 1)}
 
-    player, line = parse_player_and_line(title)
-    if player is None:
+
+def _event_date(event_ticker: str) -> str | None:
+    m = _EVENT_DATE.search(event_ticker or "")
+    if not m or m.group(2) not in _MONTHS:
+        return None
+    yy, mon, dd = m.groups()
+    return f"20{yy}-{_MONTHS[mon]:02d}-{dd}"
+
+
+def _dollars(item: dict, key: str) -> float | None:
+    """Kalshi now quotes prices as dollar strings ('0.0800'); 0 means no quote."""
+    try:
+        value = float(item.get(key) or 0)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _parse_market_item(item: dict, target_date: str) -> dict | None:
+    """Parse one KXNBAPTS market. Returns None if it's for another date or has no quote."""
+    if _event_date(item.get("event_ticker", "")) != target_date:
+        return None
+    title = item.get("title", "")
+    player = title.split(":")[0].strip() if ":" in title else None
+    line = item.get("floor_strike")  # "20+ points" has floor_strike 19.5, i.e. over 19.5
+    if not player or line is None or item.get("strike_type") != "greater":
         return None
 
-    # Kalshi prices are in cents (0–100) → divide by 100 for probability
-    yes_ask = item.get("yes_ask", item.get("last_price", 50)) or 50
-    yes_bid = item.get("yes_bid", yes_ask) or yes_ask
-    # Guard: if values look like they're already 0-1 decimals, scale up first
-    if yes_ask <= 1.0:
-        yes_ask = yes_ask * 100
-        yes_bid = yes_bid * 100
-    mid_prob = round(((yes_ask + yes_bid) / 2) / 100, 4)
+    bid, ask = _dollars(item, "yes_bid_dollars"), _dollars(item, "yes_ask_dollars")
+    if bid is None and ask is None:
+        return None  # nobody quoting: no price information at all
+    mid = (bid + ask) / 2 if bid is not None and ask is not None else (bid or ask)
+    mid = round(mid, 4)
 
     return {
         "source": "kalshi",
-        "market_id": ticker,
+        "market_id": item.get("ticker", ""),
         "market_title": title,
         "player_name": player,
-        "line": line,
-        "over_prob": mid_prob,
-        "under_prob": round(1 - mid_prob, 4),
+        "line": float(line),
+        "over_prob": mid,
+        "under_prob": round(1 - mid, 4),
         "game_date": target_date,
     }
 
 
 def search_nba_player_markets(game_date: str | None = None) -> list[dict]:
     """
-    Search Kalshi for open NBA player points markets.
-    Primary: series-based search for known NBA player scoring series.
-    Fallback: generic keyword scan of all open markets.
+    Open Kalshi NBA player-points markets for one date, ONE row per player.
+
+    From each player's ladder keep the strike priced closest to 50%, which is
+    the equivalent of a sportsbook's main line. Downstream code (predict.py)
+    assumes one line per player per date, so a whole ladder would mix a line
+    from one strike with a probability from another.
     """
     from datetime import date as _date
     target_date = game_date or _date.today().strftime("%Y-%m-%d")
-    seen_tickers: set[str] = set()
-    results = []
 
-    # ── Primary: NBA series tickers for player points ─────────────────────────
-    nba_series = ["NBAPTS", "NBA", "NBAPLAYER", "NBAPLAY"]
-    for series in nba_series:
-        items = _fetch_kalshi_markets_page(
-            f"{KALSHI_BASE_URL}/events",
-            {"series_ticker": series, "status": "open", "limit": 200},
-        )
-        for item in items:
-            ticker = item.get("ticker", item.get("event_ticker", ""))
-            if ticker in seen_tickers:
-                continue
-            parsed = _parse_market_item(item, target_date)
-            if parsed:
-                seen_tickers.add(ticker)
-                results.append(parsed)
+    items = _fetch_kalshi_markets_page(
+        f"{KALSHI_BASE_URL}/markets",
+        {"series_ticker": PLAYER_POINTS_SERIES, "status": "open", "limit": 200},
+    )
+    best: dict[str, dict] = {}
+    for item in items:
+        parsed = _parse_market_item(item, target_date)
+        if not parsed:
+            continue
+        key = normalize_name(parsed["player_name"])
+        cur = best.get(key)
+        if cur is None or abs(parsed["over_prob"] - 0.5) < abs(cur["over_prob"] - 0.5):
+            best[key] = parsed
 
-        # Also try /markets with series filter
-        items = _fetch_kalshi_markets_page(
-            f"{KALSHI_BASE_URL}/markets",
-            {"series_ticker": series, "status": "open", "limit": 200},
-        )
-        for item in items:
-            ticker = item.get("ticker", "")
-            if ticker in seen_tickers:
-                continue
-            parsed = _parse_market_item(item, target_date)
-            if parsed:
-                seen_tickers.add(ticker)
-                results.append(parsed)
-
-    # ── Fallback: generic keyword scan if series search found nothing ─────────
-    if not results:
-        logger.info("Series search found no markets, trying generic keyword scan")
-        for endpoint, params in [
-            (f"{KALSHI_BASE_URL}/markets", {"status": "open", "limit": 200}),
-            (f"{KALSHI_BASE_URL}/events", {"status": "open", "limit": 100}),
-        ]:
-            items = _fetch_kalshi_markets_page(endpoint, params)
-            for item in items:
-                title = item.get("title", item.get("event_title", ""))
-                ticker = item.get("ticker", item.get("event_ticker", ""))
-                if ticker in seen_tickers:
-                    continue
-                if not any(kw in title.lower() for kw in ["points", "pts", "score"]):
-                    continue
-                if "nba" not in title.lower() and "nba" not in ticker.lower():
-                    if "nba" not in str(item.get("category", "")).lower():
-                        continue
-                parsed = _parse_market_item(item, target_date)
-                if parsed:
-                    seen_tickers.add(ticker)
-                    results.append(parsed)
-
-    logger.info(f"Found {len(results)} Kalshi NBA player markets for {target_date}")
+    results = list(best.values())
+    logger.info(f"Found {len(results)} Kalshi NBA players ({len(items)} open markets) for {target_date}")
     return results
 
 

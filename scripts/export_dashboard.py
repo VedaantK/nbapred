@@ -90,10 +90,10 @@ def collect_models() -> dict:
             "trained": m is not None,
             "mae": m.get("mae") if m else None,
             "rmse": m.get("rmse") if m else None,
-            # Deliberately NOT called accuracy: _directional_accuracy is
-            # evaluated against the median of the test set, not a sportsbook
-            # line, so it measures above/below median — not an edge.
-            "median_split_accuracy": m.get("directional_accuracy") if m else None,
+            # Over/under hit rate vs. each player's pre-game 10-game average
+            # (a stand-in for the sportsbook line, which isn't stored for the
+            # test window). Not an edge: real lines are sharper than an average.
+            "vs_recent_avg_accuracy": m.get("directional_accuracy") if m else None,
         })
 
     return {
