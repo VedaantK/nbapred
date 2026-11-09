@@ -187,7 +187,7 @@ nbapred/
 Make sure `.env` exists in the project root and contains `ODDS_API_KEY=your_key`.
 
 **`No trained models found`**
-Run `python train.py` first. You also need historical data — run `python -m scripts.backfill_data` before training.
+Run `python -m models.train` first. You also need historical data — run `python -m scripts.backfill_data` before training.
 
 **NBA API timeouts**
 The NBA API rate-limits aggressively. If `backfill_data.py` fails partway through, just re-run it — already-stored rows are skipped.

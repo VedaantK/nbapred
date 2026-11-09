@@ -132,7 +132,8 @@ def collect_feature_importance(top_n: int = 12) -> list:
 
 def collect_predictions(conn) -> dict:
     """Prediction and scoring activity, if any has happened yet."""
-    total = _scalar(conn, "SELECT COUNT(*) FROM predictions")
+    # predictions holds one row per model per player-game; count player-games.
+    total = _scalar(conn, "SELECT COUNT(*) FROM (SELECT DISTINCT player_id, game_date FROM predictions)")
     scored = _scalar(conn, "SELECT COUNT(*) FROM results WHERE model_was_correct IS NOT NULL")
     correct = _scalar(conn, "SELECT COUNT(*) FROM results WHERE model_was_correct = 1")
     return {
@@ -154,12 +155,17 @@ def collect_sources(conn) -> list:
     sb = _scalar(conn, "SELECT COUNT(*) FROM sportsbook_lines")
     injuries = _scalar(conn, "SELECT COUNT(*) FROM injury_status")
     logs = _scalar(conn, "SELECT COUNT(*) FROM player_game_logs")
+    kalshi = _scalar(conn, "SELECT COUNT(*) FROM prediction_market_lines WHERE source = 'kalshi'")
 
     return [
         {"name": "NBA Stats", "detail": "player game logs, team ratings",
          "rows": logs, "status": "live" if logs else "empty"},
+        {"name": "Kalshi", "detail": "player points lines (free, used for predictions)",
+         "rows": kalshi, "status": "live" if kalshi else "empty"},
+        # Odds API lines cost credits from a 500/month free tier, so they're only
+        # fetched on purpose; empty means paused, not broken or off-season.
         {"name": "The Odds API", "detail": "sportsbook player props",
-         "rows": sb, "status": "live" if sb else "awaiting season"},
+         "rows": sb, "status": "live" if sb else "paused"},
         {"name": "ESPN", "detail": "injury reports",
          "rows": injuries, "status": "live" if injuries else "awaiting fix"},
     ]

@@ -324,3 +324,11 @@ def load_feature_names() -> list[str]:
         with open(path) as f:
             return json.load(f)
     return []
+
+
+if __name__ == "__main__":
+    # `python -m models.train` (what backfill_data.py tells you to run next)
+    # used to import this module and exit without training anything.
+    results = train_all_models(DB_PATH)
+    if not results:
+        raise SystemExit("Training produced no models; see the log above.")

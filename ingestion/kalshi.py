@@ -72,6 +72,7 @@ def _fetch_kalshi_markets_page(endpoint: str, params: dict) -> list[dict]:
 # Kalshi's NBA player-points series. Each player gets a ladder of markets
 # ("Keldon Johnson: 15+ points", "...: 20+ points"), one per strike.
 PLAYER_POINTS_SERIES = "KXNBAPTS"
+MAX_SPREAD = 0.10  # widest bid/ask gap (in dollars) we treat as a real price
 _EVENT_DATE = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})")  # KXNBAPTS-26NOV09SASPHX -> 26 NOV 09
 _MONTHS = {m: i for i, m in enumerate(
     ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], 1)}
@@ -105,10 +106,12 @@ def _parse_market_item(item: dict, target_date: str) -> dict | None:
         return None
 
     bid, ask = _dollars(item, "yes_bid_dollars"), _dollars(item, "yes_ask_dollars")
-    if bid is None and ask is None:
-        return None  # nobody quoting: no price information at all
-    mid = (bid + ask) / 2 if bid is not None and ask is not None else (bid or ask)
-    mid = round(mid, 4)
+    # Need a real two-sided quote. A dead market (bid 0.19 / ask 0.82, no volume)
+    # has a mid near 0.50 by accident, which is exactly what the "closest to 50%"
+    # main-line picker would otherwise choose.
+    if bid is None or ask is None or ask - bid > MAX_SPREAD:
+        return None
+    mid = round((bid + ask) / 2, 4)
 
     return {
         "source": "kalshi",
